@@ -1,0 +1,122 @@
+services:
+  # ==================== Kafka 4.2 KRaft 集群（3 broker） ====================
+  # 高可用：replication-factor=3，单 broker 宕机消息不丢（配合 producer acks=all）
+  #
+  # 双 Listener 设计：
+  #   INTERNAL (9092/9094/9096) → advertised 容器名，容器内应用/服务间互联
+  #   EXTERNAL (19092/19094/19096) → advertised VM IP，宿主机 Offset Explorer 等 GUI 连接
+  #
+  # ⚠️ KRaft 多节点关键（踩坑修复）：
+  #   1. CONTROLLER 端口统一 9093（容器独立网络命名空间，内部同端口不冲突），
+  #      quorum.voters 与 listeners 必须一致——之前 kafka2/3 用 9095/9097 但 quorum 写 9093，
+  #      controller 连不上 → 选举死循环
+  #   2. 显式 hostname=seckill-kafkaN：容器默认 hostname 是容器 ID，Kafka getLocalHost() 拿到
+  #      容器 ID 写入元数据 → 其他节点解析失败 → 日志 <unresolved>
+  #   3. CONTROLLER 不映射宿主机端口（仅容器间通信用），统一 9093 后更不能映射（会冲突）
+  seckill-kafka1:
+    image: apache/kafka:4.2.1
+    container_name: seckill-kafka1
+    hostname: seckill-kafka1          # ⚠️ 关键：容器 hostname 显式指定，避免 <unresolved>
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@seckill-kafka1:9093,2@seckill-kafka2:9093,3@seckill-kafka3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CLUSTER_ID: "livemall-kraft-cluster-01"
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:19092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://seckill-kafka1:9092,EXTERNAL://${KAFKA_EXTERNAL_HOST:-192.168.147.132}:19092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"     # 显式建 topic（见 init-kafka.sh）
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2                 # ISR 至少 2，配合 acks=all 防单点
+      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
+    ports:
+      - "9092:9092"      # INTERNAL（容器内互联）
+      - "19092:19092"    # EXTERNAL（宿主机 Offset Explorer）
+    networks:
+      - livemall-net
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  seckill-kafka2:
+    image: apache/kafka:4.2.1
+    container_name: seckill-kafka2
+    hostname: seckill-kafka2          # ⚠️ 关键
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 2
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@seckill-kafka1:9093,2@seckill-kafka2:9093,3@seckill-kafka3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CLUSTER_ID: "livemall-kraft-cluster-01"
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:19094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://seckill-kafka2:9094,EXTERNAL://${KAFKA_EXTERNAL_HOST:-192.168.147.132}:19094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
+    ports:
+      - "9094:9094"      # INTERNAL
+      - "19094:19094"    # EXTERNAL（宿主机）
+    networks:
+      - livemall-net
+    depends_on:
+      - seckill-kafka1
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9094", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  seckill-kafka3:
+    image: apache/kafka:4.2.1
+    container_name: seckill-kafka3
+    hostname: seckill-kafka3          # ⚠️ 关键
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: 3
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@seckill-kafka1:9093,2@seckill-kafka2:9093,3@seckill-kafka3:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CLUSTER_ID: "livemall-kraft-cluster-01"
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9096,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:19096
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://seckill-kafka3:9096,EXTERNAL://${KAFKA_EXTERNAL_HOST:-192.168.147.132}:19096
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_HEAP_OPTS: "-Xms512M -Xmx512M"
+    ports:
+      - "9096:9096"      # INTERNAL
+      - "19096:19096"    # EXTERNAL（宿主机）
+    networks:
+      - livemall-net
+    depends_on:
+      - seckill-kafka1
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9096", "--list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+networks:
+  livemall-net:
+    name: livemall-net
+    driver: bridge
