@@ -3,6 +3,7 @@ package com.jolumn.vtslseckill;
 import org.apache.dubbo.config.spring.context.annotation.EnableDubbo;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.context.metrics.buffering.BufferingApplicationStartup;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
@@ -45,4 +46,16 @@ public class VtslSeckillApplication {
     static void main(String[] args) {
         SpringApplication.run(VtslSeckillApplication.class, args);
     }
+
+//    public static void main(String[] args) {
+//        // 1. 创建 SpringApplication 对象
+//        SpringApplication app = new SpringApplication(VtslSeckillApplication.class);
+//
+//        // 2. 开启启动记录缓冲区（容量设大点，默认4096可能不够）
+//        app.setApplicationStartup(new BufferingApplicationStartup(8192));
+//
+//        // 3. 启动应用
+//        app.run(args);
+//    }
+
 }

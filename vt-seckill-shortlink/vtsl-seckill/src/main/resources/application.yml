@@ -187,6 +187,24 @@ management:
     web:
       exposure:
         include: health,metrics,prometheus
+
+
+
+#  # ====== 可观测性 ======
+#  management:
+#    # 1. 端点本身的开关（注意是单数 endpoint）
+#    endpoint:
+#      startup:
+#        enabled: true
+#
+#    # 2. Web 暴露统一配置（注意是复数 endpoints）
+#    endpoints:
+#      web:
+#        exposure:
+#          # 把原有的和 startup 合并到一个 include 中
+#          include: health,metrics,prometheus,startup
+
+
   tracing:
     sampling:
       probability: 0.1
