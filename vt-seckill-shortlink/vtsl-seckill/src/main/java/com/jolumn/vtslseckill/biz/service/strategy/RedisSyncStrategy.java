@@ -11,7 +11,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * Redis lua 原子扣库存 + Kafka 同步发送（REDIS_SYNC，强一致性）。
- * 超高流量时 get 等待成为瓶颈 → 自适应降级为异步受理。
+ * 超高流量或 Broker 抖动时 get 等待成为瓶颈 → 自适应降级为异步受理。
  *
  * <p>职责（薄外观）：只做"模式判断 + 委托"，决策在 {@link SyncDegradeController}，
  * 发送在 {@link KafkaOrderSender}。</p>
@@ -47,20 +47,18 @@ public class RedisSyncStrategy implements SeckillStrategy {
     public SendOutcome createOrder(SeckillActivity activity, Long userId, String orderNo) {
         String msg = userId + ":" + activity.getId() + ":" + orderNo;
         if (degrade.isSyncMode()) {
-            // 同步模式：发送（返回 outcome+耗时）+ 窗口上报真实耗时（成功也记，avg 才反映真实等待）
-            KafkaOrderSender.SendSyncResult r = sender.sendSync(msg);
-            degrade.record(r.outcome(), r.elapsedMs());
+            // 同步模式：动态超时发送（返回 outcome+真实耗时）→ 窗口记录真实耗时（成功也记，P99 才反映真实等待）
+            long timeout = degrade.safeTimeoutMs();
+            KafkaOrderSender.SendSyncResult r = sender.sendSync(msg, timeout);
+            degrade.record(r.elapsedMs(), r.outcome() != SendOutcome.CONFIRMED);
             return r.outcome();   // 失败由 placeOrder 统一回补
         }
         // 降级模式（REDIS_ASYNC）：5% 探针仍走同步感知恢复，其余可靠异步受理
         if (degrade.shouldSample()) {
-            KafkaOrderSender.SendSyncResult probe = sender.sendSync(msg);
-            if (probe.outcome() == SendOutcome.CONFIRMED) {
-                degrade.onSampleSuccess();
-            } else {
-                degrade.onSampleFailure();
-            }
-            // 探针消息也走可靠异步（防探针失败丢消息），与业务消息一致
+            long timeout = degrade.safeTimeoutMs();
+            KafkaOrderSender.SendSyncResult probe = sender.sendSync(msg, timeout);
+            // 探针结果也进窗口（全量统计，含超时），供恢复判定；同时可靠异步发送防丢
+            degrade.record(probe.elapsedMs(), probe.outcome() != SendOutcome.CONFIRMED);
             return sender.sendAsyncReliable(msg, orderNo);
         }
         return sender.sendAsyncReliable(msg, orderNo);

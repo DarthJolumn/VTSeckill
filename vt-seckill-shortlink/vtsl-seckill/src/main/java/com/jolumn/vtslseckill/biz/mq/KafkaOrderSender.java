@@ -20,10 +20,14 @@ import java.util.concurrent.TimeoutException;
  *
  * <p>职责单一：只负责"把订单消息发给 Kafka"并返回结果语义。
  * <ul>
- *   <li>{@link #sendSync}：同步发送，send().get(3s) 等 broker ack → CONFIRMED / TRANSIENT / FATAL</li>
+ *   <li>{@link #sendSync}：同步发送，send().get(timeoutMs) 等 broker ack → CONFIRMED / TRANSIENT / FATAL</li>
  *   <li>{@link #sendAsyncReliable}：异步可靠发送（pending 标记 + 回调 + 补偿队列），
  *       返回 ACCEPTED（受理，送达由回调/补偿保证）</li>
  * </ul>
+ *
+ * <p>超时值由调用方动态传入（{@code SyncDegradeController.safeTimeoutMs()}），打破固定时限。
+ * 耗时用 {@code nanoTime()} 掐真实等待（含超时实际耗时），不用 {@code timeoutMs} 直接套，
+ * 避免系统调度误差放大 P99/σ 统计。</p>
  *
  * <p>降级决策（窗口/采样/恢复）在 {@code SyncDegradeController}，不在此类——避免职责交叉。</p>
  */
@@ -37,41 +41,40 @@ public class KafkaOrderSender {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final StringRedisTemplate redisTemplate;
 
-    private final long sendTimeoutSeconds;
     private final long pendingTtlSeconds;
 
     public KafkaOrderSender(KafkaTemplate<String, String> kafkaTemplate,
                             StringRedisTemplate redisTemplate,
-                            @Value("${seckill.sync-degrade.send-timeout-seconds:3}") long sendTimeoutSeconds,
                             @Value("${seckill.async.pending-ttl-seconds:300}") long pendingTtlSeconds) {
         this.kafkaTemplate = kafkaTemplate;
         this.redisTemplate = redisTemplate;
-        this.sendTimeoutSeconds = sendTimeoutSeconds;
         this.pendingTtlSeconds = pendingTtlSeconds;
     }
 
     /**
-     * 同步发送：send().get(timeout) 等 broker ack。
+     * 同步发送：send().get(timeoutMs) 等 broker ack。
      *
+     * @param timeoutMs 动态超时（由降级决策器计算）
      * @return CONFIRMED（broker ack）/ TRANSIENT（超时或中断）/ FATAL（发送异常）
+     *         实际耗时(ms)一并返回，超时样本记录的是真实等待时长（非 timeoutMs 常量）
      */
-    public SendSyncResult sendSync(String msg) {
+    public SendSyncResult sendSync(String msg, long timeoutMs) {
         long start = System.nanoTime();
         try {
             kafkaTemplate.send("seckill-order", msg)
-                    .get(sendTimeoutSeconds, TimeUnit.SECONDS);
+                    .get(timeoutMs, TimeUnit.MILLISECONDS);
             return new SendSyncResult(SendOutcome.CONFIRMED, elapsedMs(start));
         } catch (TimeoutException e) {
-            log.warn("Kafka 同步发送超时: msg={}", msg);
-            return new SendSyncResult(SendOutcome.TRANSIENT, sendTimeoutSeconds * 1000);
+            log.warn("Kafka 同步发送超时: msg={}, timeoutMs={}", msg, timeoutMs);
+            return new SendSyncResult(SendOutcome.TRANSIENT, elapsedMs(start));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.warn("Kafka 同步发送中断: msg={}", msg);
-            return new SendSyncResult(SendOutcome.TRANSIENT, sendTimeoutSeconds * 1000);
+            return new SendSyncResult(SendOutcome.TRANSIENT, elapsedMs(start));
         } catch (ExecutionException e) {
             log.warn("Kafka 同步发送异常: msg={}, cause={}",
                     msg, e.getCause() == null ? e.getMessage() : e.getCause().getMessage());
-            return new SendSyncResult(SendOutcome.FATAL, sendTimeoutSeconds * 1000);
+            return new SendSyncResult(SendOutcome.FATAL, elapsedMs(start));
         }
     }
 
