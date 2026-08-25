@@ -64,3 +64,6 @@ AGENTS.md
 .git-rewrite
 /shortly
 .reasonix
+/reasonix.toml
+
+/vtsl-docs/resourceiambic/stu
