@@ -1,146 +1,130 @@
-# VTSeckillShortLink — 高性能秒杀与短链接平台
+# VTSeckill
 
-基于 **JDK 25 (分代 ZGC + Virtual Threads) + Spring Boot 4.1** 构建的高并发秒杀与短链接平台。针对 IO 密集型特征（Redis、Kafka、MySQL），经压测验证虚拟线程 + 分代 ZGC 组合：虚拟线程消除对头阻塞、提升吞吐；分代 ZGC 将 STW 控制在 3ms，消除 GC 抖动对 P99 的影响。
+基于 **JDK 25 (分代 ZGC + Virtual Threads) + Spring Boot 4.1** 构建的高并发秒杀与短链接平台。针对 IO 密集型特征（Redis、Kafka、MySQL），经压测验证虚拟线程 + 分代 ZGC 组合：虚拟线程消除 IO 阻塞、提升吞吐；分代 ZGC 消除 G1 的全局复制阶段，消除 GC 抖动对 P99 的影响。
 
 <p align="center">
   <img src="https://img.shields.io/badge/Java-25-blue" />
   <img src="https://img.shields.io/badge/Spring%20Boot-4.1-brightgreen" />
-  <img src="https://img.shields.io/badge/ZGC-Concurrent-brightgreen" />
+  <img src="https://img.shields.io/badge/GenerationalZGC-Concurrent-brightgreen" />
   <img src="https://img.shields.io/badge/Virtual%20Threads-Enabled-blueviolet" />
-  <img src="https://img.shields.io/badge/Kafka-3%20Broker%20Cluster-orange" />
 </p>
 
----
+## 📖 目录
 
-## 核心亮点
+- [一、核心设计](#一核心设计)
+    - [1.1 扣减策略引擎](#11-扣减策略引擎)
+    - [1.2 异步消息可靠性（ASYNC）](#12-异步消息可靠性async)
+    - [1.3 非对称滞后自适应流控（SYNC）](#13-非对称滞后自适应流控sync)
+- [二、性能验证（⚠️ 重点）](#二性能验证重点)
+    - [2.1 测试环境](#21-测试环境)
+    - [2.2 秒杀链路压测（环境 A · 火山云）](#22-秒杀链路压测环境-a-火山云)
+    - [2.3 GC 对比（环境 B · 本地 · JMeter 450 线程 / 45s）](#23-gc-对比环境-b-本地-jmeter-450-线程-45sseckill-单服务)
+    - [2.4 虚拟线程对比（环境 B · 本地 · JMeter 压测）](#24-虚拟线程对比环境-b-本地-jmeter-压测)
+    - [2.5 瓶颈定位与优化（环境 A→B）](#25-瓶颈定位与优化环境-ab)
 
-- **策略模式扣库存引擎**：`SeckillStrategy` 接口 + 工厂路由，三种可动态调整的扣减策略（Redis+Kafka 异步 / Redis+Kafka 同步 / DB 乐观锁直扣），覆盖从最终一致到强一致的不同场景
-- **滑动窗口自适应降级**：REDIS_SYNC 同步等待成为瓶颈时，环形数组滑动窗口检测平均耗时/超时率超阈值，自动降级为异步受理，冷却后采样/TTL 双路径恢复——**单次失败 Fail Fast 回补库存，整体降级保吞吐**
-- **异步发送四层可靠性**：pending 标记 → 回调补偿 → 定时补投 → 对账兜底，at-least-once + 消费端唯一索引幂等 = exactly-once
-- **Kafka 3-broker 集群**：KRaft 模式 + RF=3 + 双 Listener（容器互联/宿主机访问），单 broker 宕机消息不丢
+## 一、核心设计
 
----
+### 1.1 扣减策略引擎
 
-## 性能基准
+策略 + 工厂模式，三种策略动态路由：
 
-### 线程模型对比：虚拟线程 vs 平台线程
+| 策略 | 扣减方式 | 消息发送 | 适用场景 |
+|------|---------|---------|---------|
+| ASYNC | Redis Lua 原子扣减 | Kafka 异步 + Pending 补投 | 高吞吐 |
+| SYNC | Redis Lua 原子扣减 | Kafka send().get() 同步 | 强一致 |
+| DB_QUEUE | MySQL 乐观锁 | Kafka 顺序消费 | 兜底降级 |
 
-> 环境: 8vCPU/16GB VM | 秒杀扣减接口 `POST /seckill/order` | 10 万样本/次
+### 1.2 异步消息可靠性（ASYNC）
 
-| 并发 | 指标 | 平台线程 | 虚拟线程 | 提升 |
-|------|------|---------|---------|------|
-| **600** | **TPS** | **1,924** | **2,071** | **+7.6%** |
-| | **P99** | **340ms** | **261ms** | **↓23%** |
-| | **Max** | **471ms** | **337ms** | **↓28%** |
+Redis Pending 标记 → CompletableFuture 回调确认 → 落库后手动 ACK → 定时扫描补投
 
-### GC 对比：分代 ZGC vs G1
+### 1.3 非对称滞后自适应流控（SYNC）
 
-> 环境: 8vCPU/16GB VM | 450 并发 / 45s 同口径压测 | 10 万秒杀订单
-
-| 指标 | G1 (Evacuation Pause STW) | 分代 ZGC (Concurrent) | 倍数 |
-|------|--------------------------|----------------------|------|
-| **GC 总耗时** | **856ms (全部 STW)** | **3ms (零 STW)** | **285x** |
-| 应用层 P99 | 269ms | **183ms** | **↓32%** |
-
-### 🔥 REDIS_SYNC 降级链路压测（滑动窗口降级验证）
-
-> 1000 并发 | Kafka 故障注入（tc 网络延迟）| 10 万订单全落库
-
-| 指标 | 值 |
-|------|-----|
-| 平均 / 中位数 | 84ms / 62ms |
-| P90 / P95 / P99 | 196ms / 273ms / 451ms |
-| **错误率** | **0.000%**（降级期间请求全部受理成功） |
-| **最终一致性** | **100,000 单全部落库，0 丢单 0 超卖** |
-| 吞吐 | 764.8 req/s |
-
-**验证闭环**：注入故障 → 滑动窗口检测 avg>500ms 自动降级 REDIS_ASYNC → 降级期间异步受理保吞吐 → 故障移除后采样/TTL 恢复 → 最终 ordered 标记数 = DB 订单数 = 10w，库存归零。降级瞬间超时重发的重复消息全部被唯一索引幂等拦截。
+- 降级依据：P99 超阈值 → 自动降级
+- 恢复依据：Mean 为基准 → 防毛刺横跳
+- 超时自适应：P99 + k×σ 安全边界
 
 ---
 
-## 秒杀核心设计
+## 二、性能验证（⚠️ 重点）
 
-### 策略引擎：三种可动态调整的扣减策略（策略模式）
+### 2.1 测试环境
 
-```
-SeckillStrategy（接口）
-  ├── RedisAsyncStrategy → Lua 原子扣减 + Kafka 异步（send() 不等待）→ 最终一致性
-  ├── RedisSyncStrategy  → Lua 原子扣减 + Kafka 同步（send().get(3s)）→ 强一致性
-  └── DBQueueStrategy    → DB 乐观锁直扣（@Version CAS）+ MQ 顺序消费 → 强一致低并发
-```
+#### 环境 A：火山云全链路压测
 
-- **工厂路由**：`SeckillStrategyFactory` 按 `SeckillMode` 路由，新增策略实现接口即可（开闭原则）
-- **运行时动态切换**：`PUT /seckill/activity/{id}/mode`，Caffeine 刷新即时生效；Redis 系共用 Lua 库存可互切，DB_QUEUE 库存模型不同禁止互切
+| 组件      | 配置                   |
+|---------|----------------------|
+| Java 应用 | 4 vCPU 16GB          |
+| Kafka   | 2 vCPU 4GB           |
+| MySQL云  | 2 vCPU 4GB           |
+| Redis云  | 2 vCPU 4GB           |
+| 压测工具    | JMeter 梯度压测，10w 样本/轮 |
 
-### 滑动窗口自适应降级（REDIS_SYNC）
+#### 环境 B：本地 GC/线程对比实验
 
-```
-SYNC（同步等待）──窗口 avg>500ms 或 rate>5%──▶ ASYNC（异步受理）
-      ▲                                          │
-      └──── 采样连续 5 次成功 / TTL 60s 到期 ──────┘
-```
+| 项目 | 配置                                           |
+|------|----------------------------------------------|
+| 机器 | Intel i7-11800H (8 vCPU 16GB)                |
+| JDK | JDK 25 分代 ZGC |
+| 压测工具 | JMeter 450 线程                                |
+| 对比对象 | G1 vs 分代 ZGC / 平台线程 vs 虚拟线程                  |
 
-- **环形数组滑动窗口**（`SlidingWindowStats`）：只统计最近 100 次，突发故障即时触发（对比累计统计的迟钝）
-- **失败语义**：单次失败 ≠ 降级——同步模式单次 Kafka 发送失败立即回补库存 + 503（Fail Fast），降级是窗口持续超阈值后的整体决策
-- **恢复双路径**：有流量时 5% 采样秒级恢复；无流量时 TTL 60s 兜底恢复，不依赖请求、不产生探针消息
+### 2.2 秒杀链路压测（环境 A · 火山云）
 
-### 异步发送四层可靠性
+| 阶段      | 线程数 | QPS  | Avg | P99                | 备注 |
+|---------|--------|------|-----|--------------------|------|
+| 300     | 300 | 206  | 24 | 57~99              | 低负载基线 |
+| 500     | 500 | 304  | 27 | 90~108             | — |
+| 700     | 700 | 464  | 27 | 90~127             | — |
+| JIT 预热前 | 1000 | 680  | 27 | 87~169             | C2 编译前，波动较大 |
+| JIT 预热后 | 1000 | 704  | 23 | 49                 | C2 编译后稳定，↓71% |
+| 1500    | 1500 | 1140 | 21 | 48~50              | — |
+| 2000    | 2000 | 1438 | 22 | 48~53              | — |
+| 2500    | 2500 | 1743 | 22 | 47~48              | — |
+| 稳定水位😀  | 3000 | 2004 | 24 | 50,112,99,51,92,53 | 稳定(≤112) |
+| 3150    | 3150 | 2109 | 33 | 242                | P99 开始波动 |
+| 3300    | 3300 | 2176 | 32 | 202~265            | P99 升高 |
+| 峰值验证    | 3500 | 2252 | 30 | 150~198            | 资源仍有余量 |
+| 正确性     | 3000 | —    | — | —                  | 10w订单 0超卖 0丢单 异常率0% |
 
-```
-① SET pending:{orderNo} → ② send() 立即返回
-   → ③ 回调: 成功删 pending / 失败进补偿队列
-   → ④ PendingOrderScanner 30s 补投 + CompensateQueueConsumer 5s 重试（>3 次进死信）
-   → ⑤ LostOrderReconciler 对账: ordered 标记存在但 DB 无订单 → 幂等回补
-```
+### 2.3 GC 对比（环境 B · 本地 · JMeter 450 线程 / 45s，Seckill 单服务）
 
-### 数据一致性
+> 数据来源：`temp-md/docs/A实测/压测结果/压测数据汇总-G1vsZGC.md`（jstat -gccause）
 
-- **取消订单**：DB 先（`@Version` CAS 防并发）→ Redis 后（`refund_stock.lua` EXISTS 幂等回补），ReconciliationScheduler 每 5min 对账兜底
-- **消费可靠性**：Kafka 消费端 Semaphore 背压（对齐 HikariCP）+ 手动 ACK + 唯一索引幂等 + 内存重试 3 次
+| 指标 | G1 | 分代 ZGC | G1 是 ZGC 倍数 |
+|------|-----|---------|------|
+| **总 GC 耗时** | **0.856s（全 STW）** | **0.003s（并发）** | **285×** |
+| Young GC 总耗时 YGCT | 0.652s | 0.001s | 652× |
+| 并发 GC 总耗时 CGCT | 0.205s | 0.001s | 205× |
+| Young GC 次数 | 170 次 | 9 次 | 19× |
+| Full GC | 0 | 0 | 持平 |
+| GC 触发 | Evacuation Pause（强制 STW） | Proactive / High Usage（并发） | ZGC 零强制 STW |
 
-### 瓶颈定位与优化
+**结论**：本地 450 线程下，分代 ZGC 累计 STW 较 G1 降低 **99%+**（G1 全 STW 0.856s → ZGC 并发 0.003s），单次 STW 均值进入亚毫秒级（G1 ~5ms/次 → ZGC 并发近乎 0 阻塞）。GC 抖动对 P99 的干扰被彻底消除，与项目口径（↓99.4%，均值 3.38→0.02ms）一致。
 
-SkyWalking 链路追踪 + 四阶段控制变量法定位尾部延迟根因为"Kafka 同步阻塞 + Redis 跨 VM 网络"叠加放大（P99=264ms, Max=3342ms），异步化 + Redis 本地化后 P99 降至 92ms（↓67%）。
+#### 同配置 300 并发 / 30s 应用层对比
 
----
+| 指标 | G1 phase5 | 分代 ZGC phase5 | 提升 |
+|------|-----------|-----------------|------|
+| TPS | 1191 | **1312** | +10.2% |
+| 平均 | 79ms | **56ms** | -29% |
+| P99 | 269ms | **183ms** | -32% |
+| Max | 385ms | **286ms** | -26% |
 
-## 短链核心设计
 
-- **算法即契约**：短码 = 版本前缀 + Base58(雪花ID全64位)，ProductId ↔ ShortCode 双向确定性推导，商品短链 **0 存储**、+0ms 纯内存计算
-- **多级缓存**：L1 Caffeine (3s TTL) + L2 Redis (24h±10% TTL 随机偏移)，DCL 防击穿 + Cache Aside
-- **高可用**：Gateway 短码格式校验（纯内存正则微秒级）、双限流（短码 1000次/min + IP 100次/min）、点击统计 Redis 计数 + Kafka 异步落库
+### 2.4 虚拟线程对比（环境 B · 本地 · JMeter 压测）
 
----
+| 并发线程数 | 平台线程 TPS | 虚拟线程 TPS | 提升 |
+|-----------|-------------|-------------|------|
+| 低并发（≤200） | 基本持平 | 基本持平 | 无差异（VT 优势未显现） |
+| 600+ | 基线 | **↑7.6%** | TPS ↑7.6% |
+| 600+ | 基线 P99 | **↓23%** | P99 ↓23% |
 
-## 基础设施
+**结论**：低并发下虚拟线程与平台线程持平；当并发突破 600 线程、IO 阻塞成为瓶颈时，虚拟线程通过 JVM 用户态调度（M:N 映射到 Carrier 线程）避免线程堆积，TPS 提升 7.6%、P99 下降 23%，IO 阻塞瓶颈被有效突破。
 
-- **Kafka 集群**：3 broker KRaft（RF=3 + minISR=2 + 幂等生产者），双 Listener（容器互联 INTERNAL / 宿主机 EXTERNAL），topic 由 KafkaAdmin 启动幂等创建
-- **Gateway 统一入口**：Nacos 服务注册与发现，Sentinel 令牌桶限流 + 熔断
-- **安全**：HMAC-SHA256 签名 + Nonce 60s 防重放，JWT 鉴权 + 白名单路径放行
-- **用户上下文**：ScopedValue 替代 ThreadLocal，虚拟线程间天然隔离无泄漏
+### 2.5 瓶颈定位与优化（环境 A→B）
 
----
-
-## 项目结构
-
-| 模块 | 端口 | 职责 |
-|------|------|------|
-| `vtsl-gateway` | 8080 | 网关 (WebFlux)；路由转发、JWT 鉴权、签名验签、Sentinel 限流 |
-| `vtsl-seckill` | 8090 | 秒杀 + 商品；策略引擎、Lua 扣减、滑动窗口降级、Kafka 异步下单 |
-| `vtsl-shortlink` | 8084 | 短链系统；算法码派生、三级缓存、点击统计 |
-| `vtsl-common` | - | 公共库；ScopedValue、编解码器、注解、DTO |
-
----
-
-## 运行要求
-
-- JDK 25
-- Docker Compose（中间件 VM：MySQL/Redis/Nacos/Kafka 集群）
-
----
-
-## 详细文档
-
-- [架构设计](vtsl-docs/architecture/)
-- [性能压测](vtsl-docs/performance/)（含降级链路压测 `04-sync-degrade.md`）
-- [秒杀链路全解（代码级学习文档）](vtsl-docs/resourceiambic/秒杀链路全解-代码级学习文档.md)
+| 阶段 | P99 | 说明 |
+|------|-----|------|
+| SYNC 策略（send().get() 阻塞） | 264ms | SkyWalking 定位瓶颈 |
+| 切换 ASYNC 策略 | 92ms | ↓65% |
