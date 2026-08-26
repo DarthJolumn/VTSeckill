@@ -62,8 +62,6 @@ AGENTS.md
 # Temp
 /temp-md
 .git-rewrite
-/shortly
 .reasonix
-/reasonix.toml
 
-/vtsl-docs/resourceiambic/stu
+/vtsl-docs/resourceiambic
