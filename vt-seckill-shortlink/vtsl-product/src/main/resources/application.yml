@@ -10,7 +10,7 @@ spring:
       enabled: true
 
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:192.168.147.132}:3306/livemall_product_1?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://${MYSQL_HOST:192.168.147.134}:3306/livemall_product_1?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
     password: root123
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -26,7 +26,7 @@ spring:
 
   data:
     redis:
-      host: localhost
+      host: ${REDIS_HOST:192.168.147.134}
       port: 6379
       password: 123456
       timeout: 3000ms
@@ -39,13 +39,13 @@ spring:
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.147.132:8848}
+        server-addr: ${NACOS_ADDR:192.168.147.134:8848}
         namespace:
         group: DEFAULT_GROUP
     sentinel:
       eager: true
       transport:
-        dashboard: ${SENTINEL_DASHBOARD:192.168.147.132:8858}
+        dashboard: ${SENTINEL_DASHBOARD:192.168.147.134:8858}
 
   lifecycle:
     timeout-per-shutdown-phase: 30s
@@ -63,7 +63,7 @@ dubbo:
     name: dubbo
     port: 20887  # 原 20885 与 vtsl-shortlink-api(20885) 冲突，改为 20887
   registry:
-    address: nacos://${NACOS_ADDR:192.168.147.132:8848}?registry-type=service&group=dubbo
+    address: nacos://${NACOS_ADDR:192.168.147.134:8848}?registry-type=service&group=dubbo
   consumer:
     check: false
     timeout: 3000

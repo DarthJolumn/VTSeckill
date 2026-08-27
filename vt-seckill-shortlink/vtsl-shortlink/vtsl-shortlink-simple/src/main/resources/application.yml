@@ -16,7 +16,7 @@ spring:
 
   # ====== JPA / MySQL ======
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:192.168.147.132}:3306/livemall?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://${MYSQL_HOST:192.168.147.134}:3306/livemall?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
     password: root123
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -33,9 +33,9 @@ spring:
   # ====== Redis（单主节点，跳转读只走 Master） ======
   data:
     redis:
-      host: 192.168.147.132
+      host: 192.168.147.134
       port: 6379
-      password: redis123
+      password: 123456
       timeout: 3000ms
       lettuce:
         pool:
@@ -45,7 +45,7 @@ spring:
 
   # ====== Kafka（异步统计） ======
   kafka:
-    bootstrap-servers: ${KAFKA_ADDR:192.168.147.132:9092}
+    bootstrap-servers: ${KAFKA_ADDR:192.168.147.134:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -65,13 +65,13 @@ spring:
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.147.132:8848}
+        server-addr: ${NACOS_ADDR:192.168.147.134:8848}
         namespace:
         group: DEFAULT_GROUP
     sentinel:
       eager: true
       transport:
-        dashboard: ${SENTINEL_DASHBOARD:192.168.147.132:8858}
+        dashboard: ${SENTINEL_DASHBOARD:192.168.147.134:8858}
 
   # ====== 优雅停机 ======
   lifecycle:
@@ -85,7 +85,7 @@ dubbo:
     name: dubbo
     port: 20886  # 原 20884 与 vtsl-leaderboard(20884) 冲突，改为 20886（api 模块已占 20885）
   registry:
-    address: nacos://${NACOS_ADDR:192.168.147.132:8848}?registry-type=service&group=dubbo
+    address: nacos://${NACOS_ADDR:192.168.147.134:8848}?registry-type=service&group=dubbo
   consumer:
     check: false  # ProductShortLinkService provider 可能未启动时不阻塞
     timeout: 3000

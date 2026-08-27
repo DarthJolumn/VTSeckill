@@ -15,7 +15,7 @@ spring:
 
   # ====== JPA / MySQL（t_seckill_activity / t_seckill_order） ======
   datasource:
-    url: jdbc:mysql://${MYSQL_HOST:192.168.147.132}:3306/livemall?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://${MYSQL_HOST:192.168.147.134}:3306/livemall?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
     password: root123
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -32,14 +32,8 @@ spring:
   # ====== Redis Cluster（Lua 库存扣减） ======
   data:
     redis:
-      # cluster: (切换回 localhost)
-      # nodes:
-      #   - 192.168.147.132:6381
-      #   - 192.168.147.132:6382
-      #   - 192.168.147.132:6383
-        # 强制读 Master，禁读写分离，避免主从异步复制读到过期库存
-      # read-from: MASTER
-      host: localhost
+      # 单实例（非 cluster）
+      host: ${REDIS_HOST:192.168.147.134}
       port: 6379
       password: 123456
       timeout: 3000ms
@@ -48,21 +42,20 @@ spring:
           max-active: 15
           max-idle: 10
           min-idle: 5
-        # ⚠️ 待测 cluster:read-from=MASTER 在主从切换(RESP -ASK)期间的可用性
-        # 理论上 Cluster 自动 redirect 到新 Master，需实际 failover 验证
+        # 单实例，无需 read-from
 
   # ====== Kafka（异步下单） ======
   kafka:
-    # Kafka 集群在 VM（192.168.147.132），应用也在 VM 跑 → 用 EXTERNAL listener（VM IP + 19092/19094/19096）
+    # Kafka 单实例（VM 192.168.147.134:9092），应用连 PLAINTEXT listener
     # EXTERNAL advertised 就是 VM IP，应用连上 broker 后能正确回连
-    bootstrap-servers: ${KAFKA_ADDR:192.168.147.132:19092,192.168.147.132:19094,192.168.147.132:19096}
+    bootstrap-servers: ${KAFKA_ADDR:192.168.147.134:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
       retries: 3
       batch-size: 16384
       buffer-memory: 33554432
-      acks: all                # 等所有 ISR 副本确认（RF=3 + min.insync.replicas=2）
+      acks: all                # 单实例 RF=1，等该副本确认；配合 enable-idempotence 防重复
       # 幂等生产者：防网络重试导致的重复消息（配合消费端唯一索引双保险）
       enable-idempotence: true
     consumer:
@@ -79,17 +72,17 @@ spring:
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.147.132:8848}
+        server-addr: ${NACOS_ADDR:192.168.147.134:8848}
         namespace:
         group: DEFAULT_GROUP
     sentinel:
       eager: true
       transport:
-        dashboard: ${SENTINEL_DASHBOARD:192.168.147.132:8858}
+        dashboard: ${SENTINEL_DASHBOARD:192.168.147.134:8858}
 #      datasource:
 #        ds1:
 #          nacos:
-#            server-addr: ${NACOS_ADDR:192.168.147.132:8848}
+#            server-addr: ${NACOS_ADDR:192.168.147.134:8848}
 #            dataId: vtsl-seckill-rules.json
 #            groupId: DEFAULT_GROUP
 #            rule-type: flow
@@ -110,7 +103,7 @@ dubbo:
     name: dubbo
     port: 20882
   registry:
-    address: nacos://${NACOS_ADDR:192.168.147.132:8848}?registry-type=service&group=dubbo
+    address: nacos://${NACOS_ADDR:192.168.147.134:8848}?registry-type=service&group=dubbo
   consumer:
     check: false  # WsPushService provider 可能未启动时不阻塞
     timeout: 3000
@@ -184,7 +177,7 @@ kafka:
     seckill-order: seckill-order
     # topic 自动初始化（KafkaTopicConfig / KafkaAdmin 启动时幂等创建）
     seckill-order-partitions: 6
-    replication-factor: 3
+    replication-factor: 1
 
 # ====== 可观测性 ======
 management:
