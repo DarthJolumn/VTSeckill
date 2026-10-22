@@ -20,7 +20,7 @@ spring:
   # ====== Redis（Reactive — 非阻塞 Nonce 检查） ======
   data:
     redis:
-      host: ${REDIS_HOST:192.168.147.134}
+      host: ${REDIS_HOST:192.168.1.28}
       port: 6379
       password: 123456
       timeout: 3000ms
@@ -29,14 +29,14 @@ spring:
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.147.134:8848}
+        server-addr: ${NACOS_ADDR:192.168.1.28:8848}
         namespace:   # 公共命名空间
         group: DEFAULT_GROUP
 
     sentinel:
       eager: true
       transport:
-        dashboard: ${SENTINEL_DASHBOARD:192.168.147.134:8858}
+        dashboard: ${SENTINEL_DASHBOARD:192.168.1.28:8858}
 
     # ====== Gateway 路由（Spring Cloud Gateway 5.0 新路径：server.webflux.routes） ======
     gateway:

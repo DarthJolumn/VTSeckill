@@ -16,7 +16,7 @@ spring:
       # 行为属性仍在此前缀（DataMongoProperties）；自动为 @Document + @Indexed(unique=true) 建唯一索引
       auto-index-creation: true
     redis:
-      host: ${REDIS_HOST:192.168.147.134}
+      host: ${REDIS_HOST:192.168.1.28}
       port: 6379
       password: 123456
       database: 0
@@ -29,7 +29,7 @@ spring:
   cloud:
     nacos:
       discovery:
-        server-addr: ${NACOS_ADDR:192.168.147.134:8848}
+        server-addr: ${NACOS_ADDR:192.168.1.28:8848}
         namespace:
         group: DEFAULT_GROUP
 
